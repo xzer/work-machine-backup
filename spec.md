@@ -4,54 +4,102 @@
 A git-based backup solution that collects critical work machine data into a versioned repository, automatically synced to cloud storage via Google Drive.
 
 ## Architecture
+
+Two separate repositories serve different purposes:
+
 ```
-Local (outside Google Drive)
-└── work-machine-backup/         (Git Repository - Working Copy)
-    ├── configs/                 (Configuration files)
-    ├── scripts/                 (Custom scripts & tools)
-    ├── metadata/                (System & project metadata)
+Project Repo (this repo - development)
+└── work-machine-backup/
+    ├── scripts/                 (Backup automation scripts)
     ├── docs/                    (Documentation & notes)
-    ├── collect-backup.sh        (Collect files into repo)
-    └── create-bundle.sh         (Create & sync git bundle)
+    ├── spec.md                  (This specification)
+    └── CLAUDE.md
+
+Backup Repo (separate - data, managed by scripts from project repo)
+└── <backup-repo>/
+    ├── backup-config.json       (Defines what to back up)
+    └── backup/                  (Mirrored backup contents)
+        └── <mirrored path structure>
 
 Google Drive Synced Folder
 └── backups/
-    ├── work-machine-backup-2026-02-04.bundle
-    ├── work-machine-backup-2026-02-03.bundle
-    └── work-machine-backup-2026-02-02.bundle
+    ├── <backup-repo>-2026-02-04.bundle
+    ├── <backup-repo>-2026-02-03.bundle
+    └── <backup-repo>-2026-02-02.bundle
 
 Cloud (Google Drive)
 └── Automatic sync of bundle files
 ```
 
-## Components to Backup
+### Repo Separation
+- **Project repo**: Scripts, spec, docs — normal development workflow
+- **Backup repo**: Backup content only — automated commits from sync scripts
+- Scripts in the project repo take the backup repo path as a parameter, read `backup-config.json` from the backup repo, and sync files into it
 
-### 1. Config Files
+## Backup Content Organization
+
+### Mirrored Path Structure
+Backup contents mirror the original filesystem path structure under `backup/`, home-mapped (i.e. `backup/` maps to `~`). For files outside the home directory, use `backup/__root__/` which maps to `/`. This approach:
+- Self-documents where each file came from
+- Eliminates name collisions naturally
+- Makes restoration straightforward (paths map directly back)
+- Keeps paths short for the common case (most files are under `~`)
+
+Example:
+```
+backup/
+├── .zshrc                       (~ /.zshrc)
+├── .gitconfig                   (~ /.gitconfig)
+├── .config/
+│   └── git/
+│       └── ignore               (~/.config/git/ignore)
+└── __root__/
+    └── etc/
+        └── some-config          (/etc/some-config)
+```
+
+### Sync Requirement
+The `backup/` folder must be a 100% mirror of the source. If a file is removed from source or from `backup-config.json`, it should be removed from `backup/` as well. Implementation strategy TBD.
+
+### Backup Config (`backup-config.json`)
+A JSON config file in the backup repo root defines what to back up. Each entry specifies:
+
+- **path** (required): Source file or directory path to copy
+- **preSyncCommand** (optional): Command to run before copying, to dump/refresh the file
+- **description** (optional): What this entry is and why it's backed up
+- **ignore** (optional): Patterns to exclude when backing up directories
+
+Example:
+```json
+{
+  "entries": [
+    {
+      "path": "~/.zshrc",
+      "description": "Zsh configuration"
+    },
+    {
+      "path": "~/.config/vscode/extensions.json",
+      "preSyncCommand": "code --list-extensions > ~/.config/vscode/extensions.json",
+      "description": "VSCode extensions list"
+    },
+    {
+      "path": "~/.config/iterm2",
+      "description": "iTerm2 configuration",
+      "ignore": ["cache/*", "logs/*"]
+    }
+  ]
+}
+```
+
+### Typical Backup Targets
 - Shell configurations (.bashrc, .zshrc, .bash_profile)
 - Git config (.gitconfig, .gitignore_global)
-- SSH config (config only, keys separately)
+- SSH config (config only, not keys)
 - IDE settings (VSCode, IntelliJ, etc.)
 - Terminal configs (iTerm2, etc.)
 - Claude Code configs (~/.claude/)
+- Custom scripts and tools
 - Other dotfiles
-
-### 2. Scripts and Tools
-- Custom automation scripts
-- Utility scripts
-- Project-specific tools
-- Aliases and functions
-
-### 3. Project Metadata
-- List of installed packages (brew, npm, pip, etc.)
-- List of active git repositories
-- Database of work projects/directories
-- Tool versions and dependencies
-
-### 4. Documentation
-- Work notes and references
-- Project documentation
-- Knowledge base entries
-- Setup instructions
 
 ## Sensitive Data Handling
 **Important:**

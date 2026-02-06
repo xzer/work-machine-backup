@@ -33,13 +33,19 @@ For detailed specifications, architecture, and implementation plan, see [spec.md
 
 ## Project Structure
 
+This is the **project repo** for development (scripts, spec, docs). The actual backup content lives in a separate **backup repo**.
+
 ```
-work-machine-backup/
+work-machine-backup/ (this repo)
 ├── CLAUDE.md           (This file)
 ├── spec.md            (Detailed specification)
-├── configs/           (Backed up configuration files)
-├── scripts/           (Backed up custom scripts)
-├── metadata/          (System and project metadata)
+├── scripts/           (Backup automation scripts)
 ├── docs/              (Documentation and notes)
-└── tools/             (Backup automation scripts)
+```
+
+The backup repo (separate, path passed as parameter to scripts):
+```
+<backup-repo>/
+├── backup-config.json (Defines what to back up)
+├── backup/            (Mirrored path structure of backup contents)
 ```

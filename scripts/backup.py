@@ -38,6 +38,12 @@ def setup_logging(backup_repo):
     log.addHandler(stream_handler)
 
     log.info(f"Log file: {log_file}")
+
+    # Keep only the most recent 100 log files
+    logs = sorted(globmod.glob(os.path.join(log_dir, "*.log")))
+    for old in logs[:-100]:
+        os.remove(old)
+
     return log_file
 
 

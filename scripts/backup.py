@@ -4,12 +4,41 @@
 import argparse
 from datetime import date, datetime, timedelta
 import glob as globmod
+import logging
 import re
 import json
 import os
 import shutil
 import subprocess
 import sys
+
+log = logging.getLogger("backup")
+
+
+def setup_logging(backup_repo):
+    """Set up logging to both terminal and per-run log file under __log__/."""
+    log_dir = os.path.join(backup_repo, "__log__")
+    os.makedirs(log_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"{timestamp}.log")
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s",
+                                  datefmt="%Y-%m-%d %H:%M:%S")
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+
+    log.setLevel(logging.DEBUG)
+    log.addHandler(file_handler)
+    log.addHandler(stream_handler)
+
+    log.info(f"Log file: {log_file}")
+    return log_file
 
 
 def parse_args():
@@ -32,7 +61,7 @@ def load_config(backup_repo):
     """Load and validate backup-config.json from the backup repo."""
     config_path = os.path.join(backup_repo, "backup-config.json")
     if not os.path.isfile(config_path):
-        print(f"ERROR: Config not found: {config_path}", file=sys.stderr)
+        log.error(f"Config not found: {config_path}")
         sys.exit(1)
 
     with open(config_path) as f:
@@ -40,13 +69,13 @@ def load_config(backup_repo):
 
     entries = config.get("entries", [])
     if not entries:
-        print("WARNING: No entries in backup-config.json")
+        log.warning("No entries in backup-config.json")
         return config, []
 
     validated = []
     for i, entry in enumerate(entries):
         if "path" not in entry:
-            print(f"WARNING: Entry {i} missing 'path', skipping", file=sys.stderr)
+            log.warning(f"Entry {i} missing 'path', skipping")
             continue
         entry["path"] = os.path.expanduser(entry["path"])
         validated.append(entry)
@@ -70,6 +99,23 @@ def dest_path(src_path, backup_repo):
         return os.path.join(backup_repo, "__root__", src_path.lstrip("/"))
 
 
+def _run(cmd, **kwargs):
+    """Run a subprocess command, log it and its output, return the result."""
+    if isinstance(cmd, list):
+        cmd_str = " ".join(cmd)
+    else:
+        cmd_str = cmd
+    log.debug(f"  $ {cmd_str}")
+    result = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+    if result.stdout and result.stdout.strip():
+        for line in result.stdout.strip().splitlines():
+            log.debug(f"    stdout: {line}")
+    if result.stderr and result.stderr.strip():
+        for line in result.stderr.strip().splitlines():
+            log.debug(f"    stderr: {line}")
+    return result
+
+
 def rsync_entries(entries, backup_repo, dry_run):
     """Rsync each entry into the backup repo. Returns set of failed paths."""
     failed = set()
@@ -79,7 +125,7 @@ def rsync_entries(entries, backup_repo, dry_run):
         is_dir = os.path.isdir(src)
 
         if not os.path.exists(src):
-            print(f"  WARNING: Source not found: {src}", file=sys.stderr)
+            log.warning(f"Source not found: {src}")
             failed.add(src)
             continue
 
@@ -94,7 +140,7 @@ def rsync_entries(entries, backup_repo, dry_run):
             cmd = ["rsync", src, dst]
 
         if dry_run:
-            print(f"  [dry-run] {' '.join(cmd)}")
+            log.info(f"  [dry-run] {' '.join(cmd)}")
             continue
 
         # Ensure parent directory exists
@@ -102,18 +148,15 @@ def rsync_entries(entries, backup_repo, dry_run):
         if is_dir:
             os.makedirs(dst, exist_ok=True)
 
-        print(f"  Syncing {src} -> {dst}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        log.info(f"  Syncing {src} -> {dst}")
+        result = _run(cmd)
         if result.returncode != 0:
-            print(
-                f"  WARNING: rsync failed for {src}: {result.stderr.rstrip()}",
-                file=sys.stderr,
-            )
+            log.warning(f"rsync failed for {src}: {result.stderr.rstrip()}")
             failed.add(src)
     return failed
 
 
-SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore"}
+SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore", "__log__"}
 
 
 def cleanup_removed_entries(entries, backup_repo, dry_run):
@@ -137,9 +180,9 @@ def cleanup_removed_entries(entries, backup_repo, dry_run):
             continue
         # Not covered by any entry — remove
         if dry_run:
-            print(f"  [dry-run] Would remove: {full}")
+            log.info(f"  [dry-run] Would remove: {full}")
         else:
-            print(f"  Removing: {full}")
+            log.info(f"  Removing: {full}")
             if os.path.isdir(full):
                 shutil.rmtree(full)
             else:
@@ -167,9 +210,9 @@ def _cleanup_dir(dir_path, expected, dry_run, removed):
                 _cleanup_dir(full, expected, dry_run, removed)
             continue
         if dry_run:
-            print(f"  [dry-run] Would remove: {full}")
+            log.info(f"  [dry-run] Would remove: {full}")
         else:
-            print(f"  Removing: {full}")
+            log.info(f"  Removing: {full}")
             if os.path.isdir(full):
                 shutil.rmtree(full)
             else:
@@ -180,25 +223,19 @@ def _cleanup_dir(dir_path, expected, dry_run, removed):
 def git_auto_commit(backup_repo, dry_run):
     """Stage all changes and commit if there are any. Returns True if a commit was made."""
     if dry_run:
-        result = subprocess.run(
-            ["git", "-C", backup_repo, "status", "--short"],
-            capture_output=True, text=True,
-        )
+        result = _run(["git", "-C", backup_repo, "status", "--short"])
         if result.stdout.strip():
-            print("  [dry-run] Would commit changes:")
+            log.info("  [dry-run] Would commit changes:")
             for line in result.stdout.strip().splitlines():
-                print(f"    {line}")
+                log.info(f"    {line}")
         else:
-            print("  [dry-run] No changes to commit")
+            log.info("  [dry-run] No changes to commit")
         return False
 
     # Stage everything
-    result = subprocess.run(
-        ["git", "-C", backup_repo, "add", "-A"],
-        capture_output=True, text=True,
-    )
+    result = _run(["git", "-C", backup_repo, "add", "-A"])
     if result.returncode != 0:
-        print(f"ERROR: git add failed: {result.stderr.rstrip()}", file=sys.stderr)
+        log.error(f"git add failed: {result.stderr.rstrip()}")
         sys.exit(1)
 
     # Check if there are staged changes
@@ -206,20 +243,17 @@ def git_auto_commit(backup_repo, dry_run):
         ["git", "-C", backup_repo, "diff", "--cached", "--quiet"],
     )
     if result.returncode == 0:
-        print("  No changes to commit")
+        log.info("  No changes to commit")
         return False
 
     # Commit
     msg = f"backup: sync {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    result = subprocess.run(
-        ["git", "-C", backup_repo, "commit", "-m", msg],
-        capture_output=True, text=True,
-    )
+    result = _run(["git", "-C", backup_repo, "commit", "-m", msg])
     if result.returncode != 0:
-        print(f"ERROR: git commit failed: {result.stderr.rstrip()}", file=sys.stderr)
+        log.error(f"git commit failed: {result.stderr.rstrip()}")
         sys.exit(1)
 
-    print(f"  Committed: {msg}")
+    log.info(f"  Committed: {msg}")
     return True
 
 
@@ -229,40 +263,34 @@ def create_bundle(backup_repo, bundle_dir, dry_run):
     bundle_path = os.path.join(backup_repo, filename)
 
     if dry_run:
-        print(f"  [dry-run] Would create bundle: {bundle_path}")
+        log.info(f"  [dry-run] Would create bundle: {bundle_path}")
         if bundle_dir:
-            print(f"  [dry-run] Would copy to: {os.path.join(bundle_dir, filename)}")
+            log.info(f"  [dry-run] Would copy to: {os.path.join(bundle_dir, filename)}")
         return
 
     # Create bundle
-    print(f"  Creating bundle: {bundle_path}")
-    result = subprocess.run(
-        ["git", "-C", backup_repo, "bundle", "create", bundle_path, "--all"],
-        capture_output=True, text=True,
-    )
+    log.info(f"  Creating bundle: {bundle_path}")
+    result = _run(["git", "-C", backup_repo, "bundle", "create", bundle_path, "--all"])
     if result.returncode != 0:
-        print(f"ERROR: Bundle creation failed: {result.stderr.rstrip()}", file=sys.stderr)
+        log.error(f"Bundle creation failed: {result.stderr.rstrip()}")
         sys.exit(1)
 
     # Verify bundle
-    print("  Verifying bundle...")
-    result = subprocess.run(
-        ["git", "bundle", "verify", bundle_path],
-        capture_output=True, text=True,
-    )
+    log.info("  Verifying bundle...")
+    result = _run(["git", "bundle", "verify", bundle_path])
     if result.returncode != 0:
-        print(f"ERROR: Bundle verification failed: {result.stderr.rstrip()}", file=sys.stderr)
-        print("  Keeping previous bundle. Investigate the error.", file=sys.stderr)
+        log.error(f"Bundle verification failed: {result.stderr.rstrip()}")
+        log.error("Keeping previous bundle. Investigate the error.")
         os.remove(bundle_path)
         sys.exit(1)
-    print("  Bundle verified OK")
+    log.info("  Bundle verified OK")
 
     # Copy to bundle dir if configured
     if bundle_dir:
         os.makedirs(bundle_dir, exist_ok=True)
         dest = os.path.join(bundle_dir, filename)
         shutil.copy2(bundle_path, dest)
-        print(f"  Copied to: {dest}")
+        log.info(f"  Copied to: {dest}")
 
     # Clean up bundle from repo dir (it's not meant to be committed)
     os.remove(bundle_path)
@@ -283,7 +311,7 @@ def retention_cleanup(bundle_dir, dry_run):
         bundles.append((path, bundle_date))
 
     if not bundles:
-        print("  No bundles found")
+        log.info("  No bundles found")
         return
 
     keep = set()
@@ -314,17 +342,17 @@ def retention_cleanup(bundle_dir, dry_run):
 
     to_delete = [path for path, _ in bundles if path not in keep]
     if not to_delete:
-        print(f"  All {len(bundles)} bundle(s) retained")
+        log.info(f"  All {len(bundles)} bundle(s) retained")
         return
 
     for path in to_delete:
         if dry_run:
-            print(f"  [dry-run] Would delete: {os.path.basename(path)}")
+            log.info(f"  [dry-run] Would delete: {os.path.basename(path)}")
         else:
             os.remove(path)
-            print(f"  Deleted: {os.path.basename(path)}")
+            log.info(f"  Deleted: {os.path.basename(path)}")
 
-    print(f"  Kept {len(keep)}, deleted {len(to_delete)}")
+    log.info(f"  Kept {len(keep)}, deleted {len(to_delete)}")
 
 
 def run_pre_sync_commands(entries, dry_run):
@@ -336,25 +364,16 @@ def run_pre_sync_commands(entries, dry_run):
             continue
         path = entry["path"]
         if dry_run:
-            print(f"  [dry-run] Would run pre-sync: {cmd}")
+            log.info(f"  [dry-run] Would run pre-sync: {cmd}")
             continue
-        print(f"  Running pre-sync for {path}: {cmd}")
+        log.info(f"  Running pre-sync for {path}: {cmd}")
         try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=60
-            )
-            if result.stdout:
-                print(f"    stdout: {result.stdout.rstrip()}")
+            result = _run(cmd, shell=True, timeout=60)
             if result.returncode != 0:
-                print(
-                    f"  WARNING: Pre-sync failed (exit {result.returncode}) for {path}",
-                    file=sys.stderr,
-                )
-                if result.stderr:
-                    print(f"    stderr: {result.stderr.rstrip()}", file=sys.stderr)
+                log.warning(f"Pre-sync failed (exit {result.returncode}) for {path}")
                 failed.add(path)
         except subprocess.TimeoutExpired:
-            print(f"  WARNING: Pre-sync timed out for {path}", file=sys.stderr)
+            log.warning(f"Pre-sync timed out for {path}")
             failed.add(path)
     return failed
 
@@ -369,10 +388,12 @@ def main():
         print(f"ERROR: Backup repo not found: {backup_repo}", file=sys.stderr)
         sys.exit(1)
 
-    if dry_run:
-        print("=== DRY RUN MODE ===\n")
+    setup_logging(backup_repo)
 
-    print(f"Backup repo: {backup_repo}")
+    if dry_run:
+        log.info("=== DRY RUN MODE ===\n")
+
+    log.info(f"Backup repo: {backup_repo}")
 
     config, entries = load_config(backup_repo)
     bundle_dir = config.get("bundleDir")
@@ -380,49 +401,49 @@ def main():
         bundle_dir = os.path.expanduser(bundle_dir)
         bundle_dir = os.path.abspath(bundle_dir)
 
-    print(f"Entries: {len(entries)}")
+    log.info(f"Entries: {len(entries)}")
     if bundle_dir:
-        print(f"Bundle dir: {bundle_dir}")
-    print()
+        log.info(f"Bundle dir: {bundle_dir}")
+    log.info("")
 
     for entry in entries:
-        print(f"  - {entry['path']}")
+        log.info(f"  - {entry['path']}")
 
     # Step 2: Pre-sync commands
-    print("\n--- Pre-sync commands ---")
+    log.info("\n--- Pre-sync commands ---")
     failed_paths = run_pre_sync_commands(entries, dry_run)
     if failed_paths:
-        print(f"  {len(failed_paths)} entry(ies) failed pre-sync, will be skipped")
+        log.info(f"  {len(failed_paths)} entry(ies) failed pre-sync, will be skipped")
     active_entries = [e for e in entries if e["path"] not in failed_paths]
 
     # Step 3: rsync file sync
-    print("\n--- Syncing files ---")
+    log.info("\n--- Syncing files ---")
     sync_failed = rsync_entries(active_entries, backup_repo, dry_run)
     if sync_failed:
-        print(f"  {len(sync_failed)} entry(ies) failed to sync")
+        log.info(f"  {len(sync_failed)} entry(ies) failed to sync")
 
     # Step 4: Cleanup removed entries
-    print("\n--- Cleanup ---")
+    log.info("\n--- Cleanup ---")
     removed = cleanup_removed_entries(entries, backup_repo, dry_run)
     if removed:
-        print(f"  Removed {len(removed)} item(s)")
+        log.info(f"  Removed {len(removed)} item(s)")
     else:
-        print("  Nothing to clean up")
+        log.info("  Nothing to clean up")
 
     # Step 5: Git auto-commit
-    print("\n--- Git commit ---")
+    log.info("\n--- Git commit ---")
     committed = git_auto_commit(backup_repo, dry_run)
 
     # Step 6: Bundle creation + verification + copy
-    print("\n--- Bundle ---")
+    log.info("\n--- Bundle ---")
     create_bundle(backup_repo, bundle_dir, dry_run)
 
     # Step 7: Retention cleanup
     if bundle_dir:
-        print("\n--- Retention cleanup ---")
+        log.info("\n--- Retention cleanup ---")
         retention_cleanup(bundle_dir, dry_run)
 
-    print("\nDone.")
+    log.info("\nDone.")
 
 
 if __name__ == "__main__":

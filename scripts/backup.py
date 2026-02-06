@@ -2,7 +2,9 @@
 """Backup script: syncs files per backup-config.json, commits, bundles."""
 
 import argparse
-from datetime import datetime
+from datetime import date, datetime, timedelta
+import glob as globmod
+import re
 import json
 import os
 import shutil
@@ -266,6 +268,65 @@ def create_bundle(backup_repo, bundle_dir, dry_run):
     os.remove(bundle_path)
 
 
+BUNDLE_RE = re.compile(r"^work-backup-(\d{4}-\d{2}-\d{2})\.bundle$")
+
+
+def retention_cleanup(bundle_dir, dry_run):
+    """Apply GFS retention policy to bundles in bundle_dir."""
+    today = date.today()
+    bundles = []
+    for path in sorted(globmod.glob(os.path.join(bundle_dir, "work-backup-*.bundle"))):
+        m = BUNDLE_RE.match(os.path.basename(path))
+        if not m:
+            continue
+        bundle_date = date.fromisoformat(m.group(1))
+        bundles.append((path, bundle_date))
+
+    if not bundles:
+        print("  No bundles found")
+        return
+
+    keep = set()
+    weekly_kept = {}   # (iso_year, iso_week) -> earliest date
+    monthly_kept = {}  # (year, month) -> earliest date
+
+    for path, d in bundles:
+        age = (today - d).days
+        if age <= 30:
+            # Daily tier: keep all
+            keep.add(path)
+        elif age <= 89:
+            # Weekly tier: keep first bundle per ISO week
+            key = d.isocalendar()[:2]
+            if key not in weekly_kept or d < weekly_kept[key][1]:
+                weekly_kept[key] = (path, d)
+        elif age <= 364:
+            # Monthly tier: keep first bundle per month
+            key = (d.year, d.month)
+            if key not in monthly_kept or d < monthly_kept[key][1]:
+                monthly_kept[key] = (path, d)
+        # else: expired (365+), don't keep
+
+    for path, _ in weekly_kept.values():
+        keep.add(path)
+    for path, _ in monthly_kept.values():
+        keep.add(path)
+
+    to_delete = [path for path, _ in bundles if path not in keep]
+    if not to_delete:
+        print(f"  All {len(bundles)} bundle(s) retained")
+        return
+
+    for path in to_delete:
+        if dry_run:
+            print(f"  [dry-run] Would delete: {os.path.basename(path)}")
+        else:
+            os.remove(path)
+            print(f"  Deleted: {os.path.basename(path)}")
+
+    print(f"  Kept {len(keep)}, deleted {len(to_delete)}")
+
+
 def run_pre_sync_commands(entries, dry_run):
     """Run preSyncCommand for entries that define one. Returns set of failed paths."""
     failed = set()
@@ -355,6 +416,11 @@ def main():
     # Step 6: Bundle creation + verification + copy
     print("\n--- Bundle ---")
     create_bundle(backup_repo, bundle_dir, dry_run)
+
+    # Step 7: Retention cleanup
+    if bundle_dir:
+        print("\n--- Retention cleanup ---")
+        retention_cleanup(bundle_dir, dry_run)
 
     print("\nDone.")
 

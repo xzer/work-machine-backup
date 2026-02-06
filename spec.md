@@ -117,15 +117,22 @@ Example:
 5. Create initial bundle and copy to Google Drive folder
 6. Verify Google Drive syncs the bundle
 
-### Regular Backup Process
-1. Run collection script to gather latest files into repo
-2. Review changes (git diff)
-3. Commit with descriptive message
-4. Run bundle script to create dated .bundle file (YYYY-MM-DD format)
-5. **Verify bundle integrity**: `git bundle verify <bundle-file>`
-6. If verification passes, copy bundle to Google Drive synced folder
-7. Run retention cleanup script to maintain backup policy
-8. Google Drive automatically syncs bundle to cloud (atomic, safe)
+### Regular Backup Process (Python + rsync)
+
+Technology choice: **Python** for the main script logic, **rsync** for file sync operations.
+- Python handles config parsing, pre-sync commands, git operations, bundling, and error handling
+- rsync handles efficient file mirroring with deletion and exclude pattern support
+
+Pipeline:
+1. Read `backup-config.json` from the backup repo
+2. Run `preSyncCommand` for entries that define one
+3. Use rsync to sync each entry into `backup/` (mirrored paths, with `--delete` for removals)
+4. Auto-commit changes to the backup repo git
+5. Create git bundle (dated .bundle file, YYYY-MM-DD format)
+6. **Verify bundle integrity**: `git bundle verify <bundle-file>`
+7. If verification passes, copy bundle to Google Drive synced folder
+8. Run retention cleanup to maintain backup policy
+9. Google Drive automatically syncs bundle to cloud (atomic, safe)
 
 **Note**: If bundle verification fails, the script should:
 - Alert the user
@@ -160,25 +167,26 @@ This provides:
 ## Implementation Plan
 
 ### Phase 1: Repository Setup
-- Create repo structure
+- Create backup repo structure
 - Set up .gitignore for sensitive files
-- Create README with backup manifest
+- Create initial `backup-config.json`
 
-### Phase 2: Collection Scripts
-- Script to copy config files
-- Script to export package lists
-- Script to catalog git repositories
-- Script to organize documentation
+### Phase 2: Backup Script (Python)
+- Read `backup-config.json` and validate entries
+- Execute pre-sync commands
+- rsync each entry to mirrored path under `backup/`
+- Auto-commit changes to backup repo
+- Create and verify git bundle
+- Copy bundle to Google Drive sync folder
 
-### Phase 3: Automation
-- Main backup.sh orchestrator
-- Dry-run mode for testing
+### Phase 3: Retention & Cleanup
+- Implement retention policy cleanup script
 - Logging and error handling
-- Change detection
 
-### Phase 4: Maintenance
+### Phase 4: Automation & Maintenance
+- Scheduled runs (cron/launchd)
+- Dry-run mode for testing
 - Periodic review of what's backed up
-- Update scripts as environment changes
 - Document restoration procedures
 
 ## Restoration Strategy

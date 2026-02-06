@@ -16,10 +16,13 @@ Project Repo (this repo - development)
     └── CLAUDE.md
 
 Backup Repo (separate - data, managed by scripts from project repo)
-└── <backup-repo>/
+└── <backup-repo>/               (Repo root = home directory mirror)
     ├── backup-config.json       (Defines what to back up)
-    └── backup/                  (Mirrored backup contents)
-        └── <mirrored path structure>
+    ├── README.md                (Path conventions)
+    ├── __root__/                (Mirror for files outside ~)
+    ├── .zshrc                   (~/.zshrc)
+    ├── .gitconfig               (~/.gitconfig)
+    └── ...
 
 Google Drive Synced Folder
 └── backups/
@@ -39,7 +42,7 @@ Cloud (Google Drive)
 ## Backup Content Organization
 
 ### Mirrored Path Structure
-Backup contents mirror the original filesystem path structure under `backup/`, home-mapped (i.e. `backup/` maps to `~`). For files outside the home directory, use `backup/__root__/` which maps to `/`. This approach:
+The backup repo root is home-mapped (i.e. repo root = `~`). Files are mirrored directly at the repo root preserving their path relative to home. For files outside the home directory, use `__root__/` which maps to `/`. This approach:
 - Self-documents where each file came from
 - Eliminates name collisions naturally
 - Makes restoration straightforward (paths map directly back)
@@ -47,9 +50,11 @@ Backup contents mirror the original filesystem path structure under `backup/`, h
 
 Example:
 ```
-backup/
-├── .zshrc                       (~ /.zshrc)
-├── .gitconfig                   (~ /.gitconfig)
+<backup-repo>/
+├── backup-config.json           (config, not a mirrored file)
+├── README.md                    (conventions, not a mirrored file)
+├── .zshrc                       (~/.zshrc)
+├── .gitconfig                   (~/.gitconfig)
 ├── .config/
 │   └── git/
 │       └── ignore               (~/.config/git/ignore)
@@ -59,7 +64,7 @@ backup/
 ```
 
 ### Sync Requirement
-The `backup/` folder must be a 100% mirror of the source. If a file is removed from source or from `backup-config.json`, it should be removed from `backup/` as well. Implementation strategy TBD.
+The mirrored files in the backup repo must be a 100% mirror of the source. If a file is removed from source or from `backup-config.json`, it should be removed from the backup repo as well. Implementation strategy TBD.
 
 ### Backup Config (`backup-config.json`)
 A JSON config file in the backup repo root defines what to back up. Each entry specifies:
@@ -126,7 +131,7 @@ Technology choice: **Python** for the main script logic, **rsync** for file sync
 Pipeline:
 1. Read `backup-config.json` from the backup repo
 2. Run `preSyncCommand` for entries that define one
-3. Use rsync to sync each entry into `backup/` (mirrored paths, with `--delete` for removals)
+3. Use rsync to sync each entry into the backup repo (mirrored paths, with `--delete` for removals)
 4. Auto-commit changes to the backup repo git
 5. Create git bundle (dated .bundle file, YYYY-MM-DD format)
 6. **Verify bundle integrity**: `git bundle verify <bundle-file>`
@@ -174,7 +179,7 @@ This provides:
 ### Phase 2: Backup Script (Python)
 - Read `backup-config.json` and validate entries
 - Execute pre-sync commands
-- rsync each entry to mirrored path under `backup/`
+- rsync each entry to mirrored path in backup repo
 - Auto-commit changes to backup repo
 - Create and verify git bundle
 - Copy bundle to Google Drive sync folder

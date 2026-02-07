@@ -78,6 +78,11 @@ def parse_args():
         action="store_true",
         help="Show what would happen without making changes",
     )
+    parser.add_argument(
+        "--notify-test",
+        action="store_true",
+        help="Send a test notification to Telegram and exit",
+    )
     return parser.parse_args()
 
 
@@ -421,6 +426,14 @@ def main():
 
     config, entries = load_config(backup_repo)
     telegram_config = config.get("telegram", {})
+
+    if args.notify_test:
+        log.info("Sending test notification to Telegram...")
+        notify_telegram(telegram_config,
+                        f"✅ Backup notification test\nRepo: {backup_repo}")
+        log.info("Done.")
+        return
+
     bundle_dir = config.get("bundleDir")
     if bundle_dir:
         bundle_dir = os.path.expanduser(bundle_dir)

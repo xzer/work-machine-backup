@@ -323,8 +323,8 @@ def retention_cleanup(bundle_dir, dry_run):
         return
 
     keep = set()
-    weekly_kept = {}   # (iso_year, iso_week) -> earliest date
-    monthly_kept = {}  # (year, month) -> earliest date
+    weekly_kept = {}   # (iso_year, iso_week) -> latest date
+    monthly_kept = {}  # (year, month) -> latest date
 
     for path, d in bundles:
         age = (today - d).days
@@ -332,14 +332,14 @@ def retention_cleanup(bundle_dir, dry_run):
             # Daily tier: keep all
             keep.add(path)
         elif age <= 89:
-            # Weekly tier: keep first bundle per ISO week
+            # Weekly tier: keep last bundle per ISO week
             key = d.isocalendar()[:2]
-            if key not in weekly_kept or d < weekly_kept[key][1]:
+            if key not in weekly_kept or d > weekly_kept[key][1]:
                 weekly_kept[key] = (path, d)
         elif age <= 364:
-            # Monthly tier: keep first bundle per month
+            # Monthly tier: keep last bundle per month
             key = (d.year, d.month)
-            if key not in monthly_kept or d < monthly_kept[key][1]:
+            if key not in monthly_kept or d > monthly_kept[key][1]:
                 monthly_kept[key] = (path, d)
         # else: expired (365+), don't keep
 
@@ -452,16 +452,20 @@ def main():
         log.info("\n--- Git commit ---")
         committed = git_auto_commit(backup_repo, dry_run)
 
-        # Step 6: Bundle creation + verification + copy
-        log.info("\n--- Bundle ---")
-        create_bundle(backup_repo, bundle_dir, dry_run)
+        if not committed and not dry_run:
+            log.info("\nNo changes, skipping bundle creation.")
+            log.info("\nDone.")
+        else:
+            # Step 6: Bundle creation + verification + copy
+            log.info("\n--- Bundle ---")
+            create_bundle(backup_repo, bundle_dir, dry_run)
 
-        # Step 7: Retention cleanup
-        if bundle_dir:
-            log.info("\n--- Retention cleanup ---")
-            retention_cleanup(bundle_dir, dry_run)
+            # Step 7: Retention cleanup
+            if bundle_dir:
+                log.info("\n--- Retention cleanup ---")
+                retention_cleanup(bundle_dir, dry_run)
 
-        log.info("\nDone.")
+            log.info("\nDone.")
 
     except SystemExit as e:
         if e.code != 0:

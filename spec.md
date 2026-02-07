@@ -152,8 +152,8 @@ Pipeline:
 
 ### Retention Policy (Grandfather-Father-Son Strategy)
 - **Daily**: Keep all bundles from last 30 days
-- **Weekly**: Keep one bundle per week for 30-90 days ago (retain first bundle of each week)
-- **Monthly**: Keep one bundle per month for 90-365 days ago (retain first bundle of each month)
+- **Weekly**: Keep one bundle per week for 30-90 days ago (retain last bundle of each week)
+- **Monthly**: Keep one bundle per month for 90-365 days ago (retain last bundle of each month)
 - **Cleanup**: Delete bundles older than 1 year
 
 This provides:

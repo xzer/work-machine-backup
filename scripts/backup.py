@@ -144,10 +144,73 @@ def _run(cmd, **kwargs):
     return result
 
 
-def rsync_entries(entries, backup_repo, dry_run):
-    """Rsync each entry into the backup repo. Returns set of failed paths."""
+def _parse_refs(output):
+    """Parse 'sha ref' lines into a set of tuples."""
+    refs = set()
+    for line in output.strip().splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            refs.add((parts[0], parts[1]))
+    return refs
+
+
+def _sync_git_repo(entry, backup_repo, dry_run):
+    """Sync a git repo entry by creating a bundle. Returns True on failure."""
+    src = entry["path"]
+    dst = dest_path(src, backup_repo) + ".bundle"
+
+    if not os.path.isdir(src):
+        log.warning(f"  Git repo not found: {src}")
+        return True
+
+    if not os.path.isdir(os.path.join(src, ".git")):
+        log.warning(f"  Not a git repo: {src}")
+        return True
+
+    # Compare refs to skip if unchanged
+    result = _run(["git", "-C", src, "show-ref", "--head"])
+    repo_refs = _parse_refs(result.stdout) if result.returncode == 0 else None
+
+    if os.path.isfile(dst):
+        result = _run(["git", "bundle", "list-heads", dst])
+        bundle_refs = _parse_refs(result.stdout) if result.returncode == 0 else None
+    else:
+        bundle_refs = None
+
+    if repo_refs is not None and bundle_refs is not None and repo_refs == bundle_refs:
+        log.info(f"  Unchanged: {src}")
+        return False
+
+    if dry_run:
+        log.info(f"  [dry-run] Would bundle git repo: {src} -> {dst}")
+        return False
+
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    log.info(f"  Bundling {src} -> {dst}")
+    result = _run(["git", "-C", src, "bundle", "create", dst, "--all"])
+    if result.returncode != 0:
+        log.warning(f"  Bundle failed for {src}: {result.stderr.rstrip()}")
+        return True
+
+    result = _run(["git", "-C", src, "bundle", "verify", dst])
+    if result.returncode != 0:
+        log.warning(f"  Bundle verify failed for {src}: {result.stderr.rstrip()}")
+        os.remove(dst)
+        return True
+    log.info(f"  Verified OK: {src}")
+
+    return False
+
+
+def sync_entries(entries, backup_repo, dry_run):
+    """Sync each entry into the backup repo. Returns set of failed paths."""
     failed = set()
     for entry in entries:
+        if entry.get("type") == "git-repo":
+            if _sync_git_repo(entry, backup_repo, dry_run):
+                failed.add(entry["path"])
+            continue
+
         src = entry["path"]
         dst = dest_path(src, backup_repo)
         is_dir = os.path.isdir(src)
@@ -199,6 +262,8 @@ def cleanup_removed_entries(entries, backup_repo, dry_run):
     expected = set()
     for entry in entries:
         dst = dest_path(entry["path"], backup_repo)
+        if entry.get("type") == "git-repo":
+            dst += ".bundle"
         expected.add(dst)
 
     removed = []
@@ -511,9 +576,9 @@ def main():
             log.info(f"  {len(failed_paths)} entry(ies) failed pre-sync, will be skipped")
         active_entries = [e for e in entries if e["path"] not in failed_paths]
 
-        # rsync file sync
+        # Sync files
         log.info("\n--- Syncing files ---")
-        sync_failed = rsync_entries(active_entries, backup_repo, dry_run)
+        sync_failed = sync_entries(active_entries, backup_repo, dry_run)
         if sync_failed:
             log.info(f"  {len(sync_failed)} entry(ies) failed to sync")
 

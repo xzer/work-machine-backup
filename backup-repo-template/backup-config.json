@@ -1,0 +1,17 @@
+{
+  "bundleDir": "~/workdir/backup-bundles",
+  "telegram": {
+    "botToken": "",
+    "chatId": ""
+  },
+  "entries": [
+    {
+      "path": "~/.zshrc",
+      "description": "Zsh configuration"
+    },
+    {
+      "path": "~/.gitconfig",
+      "description": "Git configuration"
+    }
+  ]
+}

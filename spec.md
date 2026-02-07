@@ -53,7 +53,7 @@ Example:
 ```
 <backup-repo>/
 ├── backup-config.json           (config)
-├── com.rui.work-backup.plist    (launchd schedule)
+├── net.xzer.work-backup.plist    (launchd schedule)
 ├── README.md                    (conventions)
 ├── .gitignore
 ├── __log__/                     (per-run log files)

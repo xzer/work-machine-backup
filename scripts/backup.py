@@ -180,7 +180,7 @@ def rsync_entries(entries, backup_repo, dry_run):
 
 
 SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore", "__log__",
-                 "__root__", "com.rui.work-backup.plist"}
+                 "__root__", "net.xzer.work-backup.plist"}
 
 
 def cleanup_removed_entries(entries, backup_repo, dry_run):

@@ -76,11 +76,20 @@ The mirrored files in the backup repo must be a 100% mirror of the source. If a 
 A JSON config file in the backup repo root defines what to back up. Each entry specifies:
 
 - **path** (required): Source file or directory path to copy
+- **type** (optional): Entry type. Default is file/directory sync via rsync. Set to `"git-repo"` for git repository backup (see below).
 - **preSyncCommand** (optional): Command to run before copying, to dump/refresh the file
 - **description** (optional): What this entry is and why it's backed up
-- **ignore** (optional): Patterns to exclude when backing up directories
+- **ignore** (optional): Patterns to exclude when backing up directories (rsync entries only)
 
-Example:
+#### Git Repo Entries (`"type": "git-repo"`)
+
+For local git repositories that can't be pushed to a cloud host, set `"type": "git-repo"`. Instead of rsyncing the directory (which could copy a broken `.git` state), the script creates an atomic git bundle via `git bundle create --all`.
+
+- The bundle is stored at the mirrored path with a `.bundle` suffix (e.g. `/Volumes/workplace/my-repo` → `__root__/Volumes/workplace/my-repo.bundle`)
+- On each run, the script compares repo refs (`git show-ref --head`) against the existing bundle's refs (`git bundle list-heads`). If they match, the bundle is skipped — avoiding unnecessary backup commits from non-deterministic pack files.
+- The bundle is verified after creation (`git bundle verify`). On failure, the bundle is removed and the entry is marked as failed.
+- Captures full commit history and all refs. Uncommitted working tree changes are not included.
+
 Top-level config fields:
 
 - **bundleDir** (optional): Path to the bundle output directory (e.g. Google Drive synced folder)
@@ -111,6 +120,11 @@ Example:
       "path": "~/.config/iterm2",
       "description": "iTerm2 configuration",
       "ignore": ["cache/*", "logs/*"]
+    },
+    {
+      "path": "/Volumes/workplace/my-project",
+      "type": "git-repo",
+      "description": "Local project repo"
     }
   ]
 }
@@ -124,6 +138,7 @@ Example:
 - Terminal configs (iTerm2, etc.)
 - Claude Code configs (~/.claude/)
 - Custom scripts and tools
+- Local git repos that can't be pushed to cloud (use `"type": "git-repo"`)
 - Other dotfiles
 
 ## Sensitive Data Handling

@@ -115,17 +115,11 @@ def load_config(backup_repo):
 def dest_path(src_path, backup_repo):
     """Compute the destination path in the backup repo for a source path.
 
-    Mirroring rules:
-      ~/foo  -> <backup_repo>/foo
+    All paths map to __root__/ as a full mirror of /:
+      ~/foo  -> <backup_repo>/__root__/Users/<user>/foo
       /foo   -> <backup_repo>/__root__/foo
     """
-    home = os.path.expanduser("~")
-    if src_path.startswith(home + "/") or src_path == home:
-        rel = os.path.relpath(src_path, home)
-        return os.path.join(backup_repo, rel)
-    else:
-        # Absolute path outside home -> __root__
-        return os.path.join(backup_repo, "__root__", src_path.lstrip("/"))
+    return os.path.join(backup_repo, "__root__", src_path.lstrip("/"))
 
 
 def _run(cmd, **kwargs):
@@ -186,11 +180,15 @@ def rsync_entries(entries, backup_repo, dry_run):
 
 
 SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore", "__log__",
-                 "com.rui.work-backup.plist"}
+                 "__root__", "com.rui.work-backup.plist"}
 
 
 def cleanup_removed_entries(entries, backup_repo, dry_run):
-    """Remove files/dirs in backup repo that don't belong to any config entry."""
+    """Remove files/dirs under __root__/ that don't belong to any config entry."""
+    root_dir = os.path.join(backup_repo, "__root__")
+    if not os.path.isdir(root_dir):
+        return []
+
     # Build set of expected dest paths (absolute)
     expected = set()
     for entry in entries:
@@ -198,27 +196,7 @@ def cleanup_removed_entries(entries, backup_repo, dry_run):
         expected.add(dst)
 
     removed = []
-    # Walk top-level items in backup repo
-    for name in os.listdir(backup_repo):
-        if name in SPECIAL_NAMES:
-            continue
-        full = os.path.join(backup_repo, name)
-        if _is_covered(full, expected):
-            # If it's a directory that is expected, still check children
-            if os.path.isdir(full):
-                _cleanup_dir(full, expected, dry_run, removed)
-            continue
-        # Not covered by any entry — remove
-        if dry_run:
-            log.info(f"  [dry-run] Would remove: {full}")
-        else:
-            log.info(f"  Removing: {full}")
-            if os.path.isdir(full):
-                shutil.rmtree(full)
-            else:
-                os.remove(full)
-        removed.append(full)
-
+    _cleanup_dir(root_dir, expected, dry_run, removed)
     return removed
 
 

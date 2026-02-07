@@ -16,13 +16,14 @@ Project Repo (this repo - development)
     └── CLAUDE.md
 
 Backup Repo (separate - data, managed by scripts from project repo)
-└── <backup-repo>/               (Repo root = home directory mirror)
+└── <backup-repo>/
     ├── backup-config.json       (Defines what to back up)
     ├── README.md                (Path conventions)
-    ├── __root__/                (Mirror for files outside ~)
-    ├── .zshrc                   (~/.zshrc)
-    ├── .gitconfig               (~/.gitconfig)
-    └── ...
+    ├── __log__/                 (Per-run log files)
+    └── __root__/                (Full mirror of /)
+        └── Users/rui/
+            ├── .zshrc
+            └── .gitconfig
 
 Google Drive Synced Folder
 └── backups/
@@ -42,23 +43,27 @@ Cloud (Google Drive)
 ## Backup Content Organization
 
 ### Mirrored Path Structure
-The backup repo root is home-mapped (i.e. repo root = `~`). Files are mirrored directly at the repo root preserving their path relative to home. For files outside the home directory, use `__root__/` which maps to `/`. This approach:
+All backup content lives under `__root__/`, which is a full mirror of the filesystem root `/`. The repo root is kept clean with only config and meta files. This approach:
+- Cleanly separates backup content from repo config
 - Self-documents where each file came from
 - Eliminates name collisions naturally
 - Makes restoration straightforward (paths map directly back)
-- Keeps paths short for the common case (most files are under `~`)
 
 Example:
 ```
 <backup-repo>/
-├── backup-config.json           (config, not a mirrored file)
-├── README.md                    (conventions, not a mirrored file)
-├── .zshrc                       (~/.zshrc)
-├── .gitconfig                   (~/.gitconfig)
-├── .config/
-│   └── git/
-│       └── ignore               (~/.config/git/ignore)
-└── __root__/
+├── backup-config.json           (config)
+├── com.rui.work-backup.plist    (launchd schedule)
+├── README.md                    (conventions)
+├── .gitignore
+├── __log__/                     (per-run log files)
+└── __root__/                    (full mirror of /)
+    ├── Users/rui/
+    │   ├── .zshrc               (~/.zshrc)
+    │   ├── .gitconfig           (~/.gitconfig)
+    │   └── .config/
+    │       └── git/
+    │           └── ignore       (~/.config/git/ignore)
     └── etc/
         └── some-config          (/etc/some-config)
 ```

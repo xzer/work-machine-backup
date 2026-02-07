@@ -304,14 +304,40 @@ def create_bundle(backup_repo, bundle_dir, dry_run):
     os.remove(bundle_path)
 
 
-BUNDLE_RE = re.compile(r"^work-backup-(\d{4}-\d{2}-\d{2})\.bundle$")
+BUNDLE_RE = re.compile(r"^work-backup-(\d{4}-\d{2}-\d{2})\.(bundle|skipped)$")
+MAX_CONSECUTIVE_SKIPPED = 10
+
+
+def should_force_bundle(bundle_dir):
+    """Return True if last MAX_CONSECUTIVE_SKIPPED entries are all .skipped."""
+    if not bundle_dir or not os.path.isdir(bundle_dir):
+        return False
+    entries = sorted(globmod.glob(os.path.join(bundle_dir, "work-backup-*.*")))
+    # Filter to only matching entries
+    entries = [e for e in entries if BUNDLE_RE.match(os.path.basename(e))]
+    recent = entries[-MAX_CONSECUTIVE_SKIPPED:]
+    if len(recent) < MAX_CONSECUTIVE_SKIPPED:
+        return False
+    return all(e.endswith(".skipped") for e in recent)
+
+
+def create_skipped_marker(bundle_dir, dry_run):
+    """Create a 0-byte .skipped placeholder in bundle_dir."""
+    filename = f"work-backup-{datetime.now().strftime('%Y-%m-%d')}.skipped"
+    if dry_run:
+        log.info(f"  [dry-run] Would create skipped marker: {filename}")
+        return
+    os.makedirs(bundle_dir, exist_ok=True)
+    path = os.path.join(bundle_dir, filename)
+    open(path, "w").close()
+    log.info(f"  Created skipped marker: {filename}")
 
 
 def retention_cleanup(bundle_dir, dry_run):
     """Apply GFS retention policy to bundles in bundle_dir."""
     today = date.today()
     bundles = []
-    for path in sorted(globmod.glob(os.path.join(bundle_dir, "work-backup-*.bundle"))):
+    for path in sorted(globmod.glob(os.path.join(bundle_dir, "work-backup-*.*"))):
         m = BUNDLE_RE.match(os.path.basename(path))
         if not m:
             continue
@@ -453,19 +479,28 @@ def main():
         committed = git_auto_commit(backup_repo, dry_run)
 
         if not committed and not dry_run:
-            log.info("\nNo changes, skipping bundle creation.")
-            log.info("\nDone.")
-        else:
-            # Step 6: Bundle creation + verification + copy
-            log.info("\n--- Bundle ---")
-            create_bundle(backup_repo, bundle_dir, dry_run)
+            force = should_force_bundle(bundle_dir)
+            if force:
+                log.info(f"\nNo changes, but last {MAX_CONSECUTIVE_SKIPPED} entries are skipped — forcing bundle.")
+            else:
+                log.info("\n--- No changes ---")
+                if bundle_dir:
+                    create_skipped_marker(bundle_dir, dry_run)
+                log.info("\nDone.")
 
-            # Step 7: Retention cleanup
-            if bundle_dir:
-                log.info("\n--- Retention cleanup ---")
-                retention_cleanup(bundle_dir, dry_run)
+            if not force:
+                return
 
-            log.info("\nDone.")
+        # Step 6: Bundle creation + verification + copy
+        log.info("\n--- Bundle ---")
+        create_bundle(backup_repo, bundle_dir, dry_run)
+
+        # Step 7: Retention cleanup
+        if bundle_dir:
+            log.info("\n--- Retention cleanup ---")
+            retention_cleanup(bundle_dir, dry_run)
+
+        log.info("\nDone.")
 
     except SystemExit as e:
         if e.code != 0:

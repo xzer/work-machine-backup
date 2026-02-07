@@ -3,18 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>net.xzer.work-backup</string>
+    <string>net.xzer.work-backup-hourly</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/path/to/work-machine-backup/scripts/backup-runner.sh</string>
         <string>/path/to/work-backup</string>
+        <string>--commit-only</string>
     </array>
 
     <key>StartCalendarInterval</key>
     <dict>
-        <key>Hour</key>
-        <integer>2</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>

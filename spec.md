@@ -27,9 +27,9 @@ Backup Repo (separate - data, managed by scripts from project repo)
 
 Google Drive Synced Folder
 └── backups/
-    ├── <backup-repo>-2026-02-04.bundle
-    ├── <backup-repo>-2026-02-03.bundle
-    └── <backup-repo>-2026-02-02.bundle
+    ├── work-backup-2026-02-04.bundle
+    ├── work-backup-2026-02-03.skipped     (0-byte, no changes that day)
+    └── work-backup-2026-02-02.bundle
 
 Cloud (Google Drive)
 └── Automatic sync of bundle files
@@ -53,7 +53,8 @@ Example:
 ```
 <backup-repo>/
 ├── backup-config.json           (config)
-├── net.xzer.work-backup.plist    (launchd schedule)
+├── net.xzer.work-backup-hourly.plist   (launchd: hourly commit)
+├── net.xzer.work-backup-bundle.plist   (launchd: daily bundle)
 ├── README.md                    (conventions)
 ├── .gitignore
 ├── __log__/                     (per-run log files)
@@ -80,8 +81,22 @@ A JSON config file in the backup repo root defines what to back up. Each entry s
 - **ignore** (optional): Patterns to exclude when backing up directories
 
 Example:
+Top-level config fields:
+
+- **bundleDir** (optional): Path to the bundle output directory (e.g. Google Drive synced folder)
+- **notifyOnSuccess** (optional): If `true`, send Telegram notification on successful bundle runs (skip/create). Failures always notify regardless.
+- **telegram** (optional): `{ "botToken": "...", "chatId": "..." }` for Telegram notifications
+- **entries** (required): Array of backup entries (see below)
+
+Example:
 ```json
 {
+  "bundleDir": "~/workdir/backup-bundles",
+  "notifyOnSuccess": true,
+  "telegram": {
+    "botToken": "",
+    "chatId": ""
+  },
   "entries": [
     {
       "path": "~/.zshrc",
@@ -133,22 +148,41 @@ Technology choice: **Python** for the main script logic, **rsync** for file sync
 - Python handles config parsing, pre-sync commands, git operations, bundling, and error handling
 - rsync handles efficient file mirroring with deletion and exclude pattern support
 
-Pipeline:
+The script runs in two modes:
+
+#### Commit-only mode (`--commit-only`)
+For frequent runs (e.g. hourly) that capture changes without creating bundles:
+1. Read `backup-config.json` from the backup repo
+2. Run `preSyncCommand` for entries that define one
+3. Use rsync to sync each entry into the backup repo
+4. Auto-commit changes to the backup repo git
+5. Stop (no bundle, no retention cleanup)
+
+#### Full mode (default)
+For daily bundle runs:
 1. Read `backup-config.json` from the backup repo
 2. Run `preSyncCommand` for entries that define one
 3. Use rsync to sync each entry into the backup repo (mirrored paths, with `--delete` for removals)
 4. Auto-commit changes to the backup repo git
-5. Create git bundle (dated .bundle file, YYYY-MM-DD format)
-6. **Verify bundle integrity**: `git bundle verify <bundle-file>`
-7. If verification passes, copy bundle to Google Drive synced folder
-8. Run retention cleanup to maintain backup policy
-9. Google Drive automatically syncs bundle to cloud (atomic, safe)
+5. Compare backup repo HEAD against last bundle's commit (via `git bundle list-heads`)
+6. If there are unbundled commits (or force-bundle triggered):
+   - Create git bundle (dated .bundle file, YYYY-MM-DD format)
+   - **Verify bundle integrity**: `git bundle verify <bundle-file>`
+   - If verification passes, copy bundle to Google Drive synced folder
+   - Run retention cleanup to maintain backup policy
+7. If no unbundled commits: create a 0-byte `.skipped` placeholder file
+8. After 10 consecutive `.skipped` entries, force a real bundle to ensure retention windows have restore points
 
 **Note**: If bundle verification fails, the script should:
-- Alert the user
+- Alert the user via Telegram
 - Keep the previous valid bundle
 - Not proceed with cleanup
 - Log the error for investigation
+
+### Notifications
+- **Failure**: Always sends Telegram notification (both modes)
+- **Success/skip**: Only sends if `notifyOnSuccess` is `true` in config (full mode only)
+- Messages: "Bundle created: ...", "No changes since last bundle, skipped", or "Backup failed: ..."
 
 ### Retention Policy (Grandfather-Father-Son Strategy)
 - **Daily**: Keep all bundles from last 30 days
@@ -169,10 +203,15 @@ This provides:
 - **Verifiable**: Git validates bundle integrity
 - **Safe**: Interrupted sync just means old bundle remains
 
-### Automation Options
-- Manual: Run script when needed
-- Scheduled: Use cron/launchd for periodic backups
-- Triggered: Hook into system events or workflows
+### Automation (launchd)
+
+Two launchd plists provide the schedule:
+- **`net.xzer.work-backup-hourly.plist`**: Runs every hour at :00 with `--commit-only` — captures config changes frequently
+- **`net.xzer.work-backup-bundle.plist`**: Runs daily at 16:15 in full mode — creates bundle if there are unbundled commits
+
+Both plists invoke `backup-runner.sh` (a wrapper script for scoped Full Disk Access) which calls `backup.py`.
+
+Plists are stored in the backup repo and symlinked to `~/Library/LaunchAgents/`.
 
 ## Implementation Plan
 

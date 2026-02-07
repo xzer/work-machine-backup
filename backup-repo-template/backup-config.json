@@ -1,5 +1,6 @@
 {
   "bundleDir": "~/workdir/backup-bundles",
+  "notifyOnSuccess": false,
   "telegram": {
     "botToken": "",
     "chatId": ""

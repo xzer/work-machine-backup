@@ -83,6 +83,11 @@ def parse_args():
         action="store_true",
         help="Send a test notification to Telegram and exit",
     )
+    parser.add_argument(
+        "--commit-only",
+        action="store_true",
+        help="Only sync and commit, skip bundle creation (for hourly runs)",
+    )
     return parser.parse_args()
 
 
@@ -180,7 +185,8 @@ def rsync_entries(entries, backup_repo, dry_run):
 
 
 SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore", "__log__",
-                 "__root__", "net.xzer.work-backup.plist"}
+                 "__root__", "net.xzer.work-backup-hourly.plist",
+                 "net.xzer.work-backup-bundle.plist"}
 
 
 def cleanup_removed_entries(entries, backup_repo, dry_run):
@@ -333,6 +339,33 @@ def create_skipped_marker(bundle_dir, dry_run):
     log.info(f"  Created skipped marker: {filename}")
 
 
+def has_unbundled_commits(backup_repo, bundle_dir):
+    """Check if backup repo HEAD differs from the last bundle's commit."""
+    result = _run(["git", "-C", backup_repo, "rev-parse", "HEAD"])
+    if result.returncode != 0:
+        return True
+    head = result.stdout.strip()
+
+    if not bundle_dir or not os.path.isdir(bundle_dir):
+        return True
+
+    bundles = sorted(globmod.glob(os.path.join(bundle_dir, "work-backup-*.bundle")))
+    if not bundles:
+        return True
+
+    last_bundle = bundles[-1]
+    result = _run(["git", "bundle", "list-heads", last_bundle])
+    if result.returncode != 0:
+        return True
+
+    for line in result.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "HEAD":
+            return head != parts[0]
+
+    return True
+
+
 def retention_cleanup(bundle_dir, dry_run):
     """Apply GFS retention policy to bundles in bundle_dir."""
     today = date.today()
@@ -417,6 +450,7 @@ def main():
     backup_repo = os.path.expanduser(args.backup_repo)
     backup_repo = os.path.abspath(backup_repo)
     dry_run = args.dry_run
+    commit_only = args.commit_only
 
     if not os.path.isdir(backup_repo):
         print(f"ERROR: Backup repo not found: {backup_repo}", file=sys.stderr)
@@ -443,30 +477,33 @@ def main():
     if bundle_dir:
         bundle_dir = os.path.expanduser(bundle_dir)
         bundle_dir = os.path.abspath(bundle_dir)
+    notify_success = config.get("notifyOnSuccess", False)
 
     log.info(f"Entries: {len(entries)}")
     if bundle_dir:
         log.info(f"Bundle dir: {bundle_dir}")
+    if commit_only:
+        log.info("Mode: commit-only")
     log.info("")
 
     for entry in entries:
         log.info(f"  - {entry['path']}")
 
     try:
-        # Step 2: Pre-sync commands
+        # Pre-sync commands
         log.info("\n--- Pre-sync commands ---")
         failed_paths = run_pre_sync_commands(entries, dry_run)
         if failed_paths:
             log.info(f"  {len(failed_paths)} entry(ies) failed pre-sync, will be skipped")
         active_entries = [e for e in entries if e["path"] not in failed_paths]
 
-        # Step 3: rsync file sync
+        # rsync file sync
         log.info("\n--- Syncing files ---")
         sync_failed = rsync_entries(active_entries, backup_repo, dry_run)
         if sync_failed:
             log.info(f"  {len(sync_failed)} entry(ies) failed to sync")
 
-        # Step 4: Cleanup removed entries
+        # Cleanup removed entries
         log.info("\n--- Cleanup ---")
         removed = cleanup_removed_entries(entries, backup_repo, dry_run)
         if removed:
@@ -474,33 +511,45 @@ def main():
         else:
             log.info("  Nothing to clean up")
 
-        # Step 5: Git auto-commit
+        # Git auto-commit
         log.info("\n--- Git commit ---")
-        committed = git_auto_commit(backup_repo, dry_run)
+        git_auto_commit(backup_repo, dry_run)
 
-        if not committed and not dry_run:
-            force = should_force_bundle(bundle_dir)
+        # commit-only mode: stop here
+        if commit_only:
+            log.info("\nDone (commit-only).")
+            return
+
+        # Full mode: decide whether to create a bundle
+        unbundled = has_unbundled_commits(backup_repo, bundle_dir)
+        force = not unbundled and should_force_bundle(bundle_dir)
+
+        if unbundled or force:
             if force:
-                log.info(f"\nNo changes, but last {MAX_CONSECUTIVE_SKIPPED} entries are skipped — forcing bundle.")
-            else:
-                log.info("\n--- No changes ---")
-                if bundle_dir:
-                    create_skipped_marker(bundle_dir, dry_run)
-                log.info("\nDone.")
+                log.info(f"\nNo new commits since last bundle, but last {MAX_CONSECUTIVE_SKIPPED} entries are skipped — forcing bundle.")
 
-            if not force:
-                return
+            # Bundle creation + verification + copy
+            log.info("\n--- Bundle ---")
+            create_bundle(backup_repo, bundle_dir, dry_run)
 
-        # Step 6: Bundle creation + verification + copy
-        log.info("\n--- Bundle ---")
-        create_bundle(backup_repo, bundle_dir, dry_run)
+            # Retention cleanup
+            if bundle_dir:
+                log.info("\n--- Retention cleanup ---")
+                retention_cleanup(bundle_dir, dry_run)
 
-        # Step 7: Retention cleanup
-        if bundle_dir:
-            log.info("\n--- Retention cleanup ---")
-            retention_cleanup(bundle_dir, dry_run)
-
-        log.info("\nDone.")
+            log.info("\nDone.")
+            if notify_success and not dry_run:
+                filename = f"work-backup-{datetime.now().strftime('%Y-%m-%d')}.bundle"
+                notify_telegram(telegram_config,
+                                f"✅ Bundle created: {filename}")
+        else:
+            log.info("\n--- No changes since last bundle ---")
+            if bundle_dir:
+                create_skipped_marker(bundle_dir, dry_run)
+            log.info("\nDone.")
+            if notify_success and not dry_run:
+                notify_telegram(telegram_config,
+                                "ℹ️ No changes since last bundle, skipped")
 
     except SystemExit as e:
         if e.code != 0:

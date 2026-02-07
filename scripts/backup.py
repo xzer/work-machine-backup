@@ -206,13 +206,23 @@ def cleanup_removed_entries(entries, backup_repo, dry_run):
     return removed
 
 
-def _is_covered(path, expected):
-    """Check if path is an expected entry or is an ancestor of one."""
-    if path in expected:
-        return True
-    # Check if path is a parent directory of any expected path
+def _is_ancestor(path, expected):
+    """Check if path is a parent/ancestor directory of any expected entry."""
     prefix = path.rstrip("/") + "/"
     return any(e.startswith(prefix) for e in expected)
+
+
+def _is_covered(path, expected):
+    """Check if path is covered by any expected entry (exact, ancestor, or descendant)."""
+    if path in expected:
+        return True
+    if _is_ancestor(path, expected):
+        return True
+    # Check if path is inside an expected directory entry
+    for e in expected:
+        if path.startswith(e.rstrip("/") + "/"):
+            return True
+    return False
 
 
 def _cleanup_dir(dir_path, expected, dry_run, removed):
@@ -220,14 +230,18 @@ def _cleanup_dir(dir_path, expected, dry_run, removed):
     for name in os.listdir(dir_path):
         full = os.path.join(dir_path, name)
         if _is_covered(full, expected):
-            if os.path.isdir(full):
+            # Only recurse into ancestor dirs (they contain expected entries deeper down).
+            # Don't recurse into expected dirs themselves — rsync manages their contents.
+            if os.path.isdir(full) and not os.path.islink(full) and _is_ancestor(full, expected):
                 _cleanup_dir(full, expected, dry_run, removed)
             continue
         if dry_run:
             log.info(f"  [dry-run] Would remove: {full}")
         else:
             log.info(f"  Removing: {full}")
-            if os.path.isdir(full):
+            if os.path.islink(full):
+                os.remove(full)
+            elif os.path.isdir(full):
                 shutil.rmtree(full)
             else:
                 os.remove(full)

@@ -285,7 +285,7 @@ def create_bundle(backup_repo, bundle_dir, dry_run):
 
     # Verify bundle
     log.info("  Verifying bundle...")
-    result = _run(["git", "bundle", "verify", bundle_path])
+    result = _run(["git", "-C", backup_repo, "bundle", "verify", bundle_path])
     if result.returncode != 0:
         log.error(f"Bundle verification failed: {result.stderr.rstrip()}")
         log.error("Keeping previous bundle. Investigate the error.")

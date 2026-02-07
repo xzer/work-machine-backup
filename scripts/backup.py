@@ -11,6 +11,8 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
+import urllib.parse
 
 log = logging.getLogger("backup")
 
@@ -45,6 +47,22 @@ def setup_logging(backup_repo):
         os.remove(old)
 
     return log_file
+
+
+def notify_telegram(telegram_config, message):
+    """Send a notification via Telegram bot. Fails silently with a log warning."""
+    token = telegram_config.get("botToken", "")
+    chat_id = telegram_config.get("chatId", "")
+    if not token or not chat_id:
+        log.debug("Telegram not configured (missing botToken or chatId), skipping notification")
+        return
+    try:
+        params = urllib.parse.urlencode({"chat_id": chat_id, "text": message})
+        url = f"https://api.telegram.org/bot{token}/sendMessage?{params}"
+        urllib.request.urlopen(url, timeout=10)
+        log.debug("Telegram notification sent")
+    except Exception as e:
+        log.warning(f"Failed to send Telegram notification: {e}")
 
 
 def parse_args():
@@ -402,6 +420,7 @@ def main():
     log.info(f"Backup repo: {backup_repo}")
 
     config, entries = load_config(backup_repo)
+    telegram_config = config.get("telegram", {})
     bundle_dir = config.get("bundleDir")
     if bundle_dir:
         bundle_dir = os.path.expanduser(bundle_dir)
@@ -415,41 +434,53 @@ def main():
     for entry in entries:
         log.info(f"  - {entry['path']}")
 
-    # Step 2: Pre-sync commands
-    log.info("\n--- Pre-sync commands ---")
-    failed_paths = run_pre_sync_commands(entries, dry_run)
-    if failed_paths:
-        log.info(f"  {len(failed_paths)} entry(ies) failed pre-sync, will be skipped")
-    active_entries = [e for e in entries if e["path"] not in failed_paths]
+    try:
+        # Step 2: Pre-sync commands
+        log.info("\n--- Pre-sync commands ---")
+        failed_paths = run_pre_sync_commands(entries, dry_run)
+        if failed_paths:
+            log.info(f"  {len(failed_paths)} entry(ies) failed pre-sync, will be skipped")
+        active_entries = [e for e in entries if e["path"] not in failed_paths]
 
-    # Step 3: rsync file sync
-    log.info("\n--- Syncing files ---")
-    sync_failed = rsync_entries(active_entries, backup_repo, dry_run)
-    if sync_failed:
-        log.info(f"  {len(sync_failed)} entry(ies) failed to sync")
+        # Step 3: rsync file sync
+        log.info("\n--- Syncing files ---")
+        sync_failed = rsync_entries(active_entries, backup_repo, dry_run)
+        if sync_failed:
+            log.info(f"  {len(sync_failed)} entry(ies) failed to sync")
 
-    # Step 4: Cleanup removed entries
-    log.info("\n--- Cleanup ---")
-    removed = cleanup_removed_entries(entries, backup_repo, dry_run)
-    if removed:
-        log.info(f"  Removed {len(removed)} item(s)")
-    else:
-        log.info("  Nothing to clean up")
+        # Step 4: Cleanup removed entries
+        log.info("\n--- Cleanup ---")
+        removed = cleanup_removed_entries(entries, backup_repo, dry_run)
+        if removed:
+            log.info(f"  Removed {len(removed)} item(s)")
+        else:
+            log.info("  Nothing to clean up")
 
-    # Step 5: Git auto-commit
-    log.info("\n--- Git commit ---")
-    committed = git_auto_commit(backup_repo, dry_run)
+        # Step 5: Git auto-commit
+        log.info("\n--- Git commit ---")
+        committed = git_auto_commit(backup_repo, dry_run)
 
-    # Step 6: Bundle creation + verification + copy
-    log.info("\n--- Bundle ---")
-    create_bundle(backup_repo, bundle_dir, dry_run)
+        # Step 6: Bundle creation + verification + copy
+        log.info("\n--- Bundle ---")
+        create_bundle(backup_repo, bundle_dir, dry_run)
 
-    # Step 7: Retention cleanup
-    if bundle_dir:
-        log.info("\n--- Retention cleanup ---")
-        retention_cleanup(bundle_dir, dry_run)
+        # Step 7: Retention cleanup
+        if bundle_dir:
+            log.info("\n--- Retention cleanup ---")
+            retention_cleanup(bundle_dir, dry_run)
 
-    log.info("\nDone.")
+        log.info("\nDone.")
+
+    except SystemExit as e:
+        if e.code != 0:
+            notify_telegram(telegram_config,
+                            f"🚨 Backup failed (exit {e.code})\nRepo: {backup_repo}")
+        raise
+    except Exception as e:
+        log.error(f"Unexpected error: {e}")
+        notify_telegram(telegram_config,
+                        f"🚨 Backup failed: {e}\nRepo: {backup_repo}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -7,8 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/path/to/work-machine-backup/scripts/backup.py</string>
+        <string>/path/to/work-machine-backup/scripts/backup-runner.sh</string>
         <string>/path/to/work-backup</string>
     </array>
 

@@ -185,7 +185,8 @@ def rsync_entries(entries, backup_repo, dry_run):
     return failed
 
 
-SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore", "__log__"}
+SPECIAL_NAMES = {".git", "backup-config.json", "README.md", ".gitignore", "__log__",
+                 "com.rui.work-backup.plist"}
 
 
 def cleanup_removed_entries(entries, backup_repo, dry_run):

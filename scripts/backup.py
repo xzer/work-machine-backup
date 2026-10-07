@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import date, datetime, timedelta
+import fcntl
 import glob as globmod
 import logging
 import re
@@ -350,10 +351,35 @@ def git_auto_commit(backup_repo, dry_run):
     return True
 
 
+def _remove_if_exists(path):
+    if os.path.lexists(path):
+        os.remove(path)
+
+
+def sweep_stale_staging(staging_dir, bundle_dir):
+    """Remove leftovers from a previously killed bundle run."""
+    stale = globmod.glob(os.path.join(staging_dir, "*"))
+    if bundle_dir:
+        stale += globmod.glob(os.path.join(bundle_dir, ".work-backup-*.partial"))
+    for path in stale:
+        size_mb = os.path.getsize(path) / 1e6
+        log.warning(f"  Removing stale staging file: {path} ({size_mb:.1f} MB)")
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+
+
 def create_bundle(backup_repo, bundle_dir, dry_run):
-    """Create a git bundle, verify it, and copy to bundle_dir if configured."""
+    """Create a git bundle, verify it, and copy to bundle_dir if configured.
+
+    The bundle is staged under .git/ so it can never be picked up by git add,
+    and copied to bundle_dir under a hidden .partial name before an atomic
+    rename, so a failed copy never leaves a file that looks like a bundle.
+    """
     filename = f"work-backup-{datetime.now().strftime('%Y-%m-%d')}.bundle"
-    bundle_path = os.path.join(backup_repo, filename)
+    staging_dir = os.path.join(backup_repo, ".git", "bundle-staging")
+    bundle_path = os.path.join(staging_dir, filename)
 
     if dry_run:
         log.info(f"  [dry-run] Would create bundle: {bundle_path}")
@@ -361,32 +387,40 @@ def create_bundle(backup_repo, bundle_dir, dry_run):
             log.info(f"  [dry-run] Would copy to: {os.path.join(bundle_dir, filename)}")
         return
 
-    # Create bundle
-    log.info(f"  Creating bundle: {bundle_path}")
-    result = _run(["git", "-C", backup_repo, "bundle", "create", bundle_path, "--all"])
-    if result.returncode != 0:
-        log.error(f"Bundle creation failed: {result.stderr.rstrip()}")
-        sys.exit(1)
+    os.makedirs(staging_dir, exist_ok=True)
+    sweep_stale_staging(staging_dir, bundle_dir)
 
-    # Verify bundle
-    log.info("  Verifying bundle...")
-    result = _run(["git", "-C", backup_repo, "bundle", "verify", bundle_path])
-    if result.returncode != 0:
-        log.error(f"Bundle verification failed: {result.stderr.rstrip()}")
-        log.error("Keeping previous bundle. Investigate the error.")
-        os.remove(bundle_path)
-        sys.exit(1)
-    log.info("  Bundle verified OK")
+    partial = os.path.join(bundle_dir, f".{filename}.partial") if bundle_dir else None
+    try:
+        # Create bundle
+        log.info(f"  Creating bundle: {bundle_path}")
+        result = _run(["git", "-C", backup_repo, "bundle", "create", bundle_path, "--all"])
+        if result.returncode != 0:
+            log.error(f"Bundle creation failed: {result.stderr.rstrip()}")
+            sys.exit(1)
 
-    # Copy to bundle dir if configured
-    if bundle_dir:
-        os.makedirs(bundle_dir, exist_ok=True)
-        dest = os.path.join(bundle_dir, filename)
-        shutil.copy2(bundle_path, dest)
-        log.info(f"  Copied to: {dest}")
+        # Verify bundle
+        log.info("  Verifying bundle...")
+        result = _run(["git", "-C", backup_repo, "bundle", "verify", bundle_path])
+        if result.returncode != 0:
+            log.error(f"Bundle verification failed: {result.stderr.rstrip()}")
+            log.error("Keeping previous bundle. Investigate the error.")
+            sys.exit(1)
+        log.info("  Bundle verified OK")
 
-    # Clean up bundle from repo dir (it's not meant to be committed)
-    os.remove(bundle_path)
+        # Copy to bundle dir if configured
+        if bundle_dir:
+            os.makedirs(bundle_dir, exist_ok=True)
+            dest = os.path.join(bundle_dir, filename)
+            shutil.copy2(bundle_path, partial)
+            os.replace(partial, dest)
+            log.info(f"  Copied to: {dest}")
+    finally:
+        # Staged bundle is never kept, success or failure
+        _remove_if_exists(bundle_path)
+        _remove_if_exists(bundle_path + ".lock")
+        if partial:
+            _remove_if_exists(partial)
 
 
 BUNDLE_RE = re.compile(r"^work-backup-(\d{4}-\d{2}-\d{2})\.(bundle|skipped)$")
@@ -524,6 +558,17 @@ def run_pre_sync_commands(entries, dry_run):
     return failed
 
 
+def acquire_run_lock(backup_repo):
+    """Take a non-blocking exclusive lock under .git/. Returns the open file, or None if held."""
+    lock_file = open(os.path.join(backup_repo, ".git", "backup-run.lock"), "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    return lock_file
+
+
 def main():
     args = parse_args()
     backup_repo = os.path.expanduser(args.backup_repo)
@@ -550,6 +595,12 @@ def main():
         notify_telegram(telegram_config,
                         f"✅ Backup notification test\nRepo: {backup_repo}")
         log.info("Done.")
+        return
+
+    # Held until process exit; another run in progress means skip this one
+    run_lock = acquire_run_lock(backup_repo)
+    if run_lock is None:
+        log.warning("Another backup run is in progress (lock held), skipping this run.")
         return
 
     bundle_dir = config.get("bundleDir")

@@ -181,9 +181,11 @@ For daily bundle runs:
 4. Auto-commit changes to the backup repo git
 5. Compare backup repo HEAD against last bundle's commit (via `git bundle list-heads`)
 6. If there are unbundled commits (or force-bundle triggered):
-   - Create git bundle (dated .bundle file, YYYY-MM-DD format)
+   - Sweep leftovers of a previously killed run: anything in `<backup-repo>/.git/bundle-staging/` and any `.work-backup-*.partial` in the bundle dir (each logged as a warning)
+   - Create git bundle (dated .bundle file, YYYY-MM-DD format) in `<backup-repo>/.git/bundle-staging/`, so it can never be picked up by `git add`
    - **Verify bundle integrity**: `git bundle verify <bundle-file>`
-   - If verification passes, copy bundle to Google Drive synced folder
+   - If verification passes, copy bundle to Google Drive synced folder as a hidden `.work-backup-YYYY-MM-DD.bundle.partial`, then atomically rename it to the final name, so a failed copy never leaves a file that looks like a valid bundle
+   - The staged bundle is always removed afterwards, on success or failure
    - Run retention cleanup to maintain backup policy
 7. If no unbundled commits: create a 0-byte `.skipped` placeholder file
 8. After 10 consecutive `.skipped` entries, force a real bundle to ensure retention windows have restore points
@@ -223,6 +225,8 @@ This provides:
 Two launchd plists provide the schedule:
 - **`net.xzer.work-backup-hourly.plist`**: Runs every hour at :00 with `--commit-only` — captures config changes frequently
 - **`net.xzer.work-backup-bundle.plist`**: Runs daily at 16:15 in full mode — creates bundle if there are unbundled commits
+
+Runs never overlap: each run takes a non-blocking lock on `<backup-repo>/.git/backup-run.lock`. If another run holds it, the new run (either mode) logs a warning and skips. A skipped daily run is picked up by the next day's run, since the bundle decision is HEAD-based.
 
 Both plists invoke `backup-runner.sh` (a wrapper script for scoped Full Disk Access) which calls `backup.py`.
 
